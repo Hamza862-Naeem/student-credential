@@ -18,7 +18,9 @@ class StudentDBHelper {
   }
 
   Future<Database> _initDB() async {
-    String path = join(await getDatabasesPath(), 'students.db');
+    String databasesPath = await getDatabasesPath();
+    String path = join(databasesPath, 'students.db');
+
     return await openDatabase(
       path,
       version: 1,
@@ -29,10 +31,20 @@ class StudentDBHelper {
   }
 
   String _createTableQuery() {
-    return ''' ''';
+    return '''
+      CREATE TABLE students (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        roll_no TEXT NOT NULL,
+        class_name TEXT NOT NULL,
+        section TEXT NOT NULL,
+        subjects TEXT NOT NULL,
+        favorite_book TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    ''';
   }
 
-  
   Future<Student?> getStudentById(int id) async {
     final db = await database;
     List<Map<String, dynamic>> result = await db.query(
@@ -46,14 +58,12 @@ class StudentDBHelper {
     return null;
   }
 
-  
   Future<List<Student>> getAllStudents() async {
     final db = await database;
     final List<Map<String, dynamic>> result = await db.query('students');
     return result.map((e) => Student.fromMap(e)).toList();
   }
 
-  
   Future<int> insertStudent(Student student) async {
     final db = await database;
     return await db.insert(
@@ -63,7 +73,6 @@ class StudentDBHelper {
     );
   }
 
-  
   Future<int> updateStudent(Student student) async {
     final db = await database;
     return await db.update(
@@ -74,7 +83,6 @@ class StudentDBHelper {
     );
   }
 
-  
   Future<int> deleteStudent(int id) async {
     final db = await database;
     return await db.delete(
@@ -84,40 +92,53 @@ class StudentDBHelper {
     );
   }
 
-  
+  /// ✅ **Sync Local SQLite to Supabase**
   Future<void> syncLocalToSupabase() async {
     final students = await getAllStudents();
 
-   for (var student in students) {
-  await supabase
-      .from('students')
-      .upsert(student.toMap(), onConflict: 'id'); // ✅ FIXED
-}
-
+    for (var student in students) {
+      try {
+        print("Syncing student to Supabase: ${student.toMap()}");
+        await supabase.from('students').upsert(student.toMap(), onConflict: 'id');
+        print("Sync successful for student ID: ${student.id}");
+      } catch (e) {
+        print("Error syncing to Supabase: $e");
+      }
+    }
   }
 
-  
+  /// ✅ **Sync Supabase Data to Local SQLite**
   Future<void> syncSupabaseToLocal() async {
     final db = await database;
-    final response = await supabase.from('students').select();
 
-    for (var data in response) {
-      Student student = Student.fromMap(data);
+    try {
+      print("Fetching data from Supabase...");
+      final response = await supabase.from('students').select();
+      print("Supabase response: $response");
 
-      // Check if student exists in SQLite
-      Student? existingStudent = await getStudentById(student.id!);
+      await db.transaction((txn) async {
+        for (var data in response) {
+          Student student = Student.fromMap(data);
+          Student? existingStudent = await getStudentById(student.id!);
 
-      
-      if (existingStudent == null) {
-        await insertStudent(student);
-      } else {
-        DateTime existingUpdatedAt = DateTime.parse(existingStudent.updatedAt);
-        DateTime newUpdatedAt = DateTime.parse(student.updatedAt);
+          if (existingStudent == null) {
+            print("Inserting new student: ${student.toMap()}");
+            await txn.insert('students', student.toMap());
+          } else {
+            DateTime existingUpdatedAt = DateTime.parse(existingStudent.updatedAt);
+            DateTime newUpdatedAt = DateTime.parse(student.updatedAt);
 
-        if (existingUpdatedAt.isBefore(newUpdatedAt)) {
-          await updateStudent(student);
+            if (existingUpdatedAt.isBefore(newUpdatedAt)) {
+              print("Updating student: ${student.toMap()}");
+              await txn.update('students', student.toMap(), where: 'id = ?', whereArgs: [student.id]);
+            }
+          }
         }
-      }
+      });
+
+      print("Sync from Supabase to SQLite completed successfully.");
+    } catch (e) {
+      print("Error syncing from Supabase: $e");
     }
   }
 }
